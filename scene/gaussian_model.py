@@ -80,6 +80,14 @@ class GaussianModel(nn.Module):
         ##Pruning data - speedy splat based
         self._importance = torch.empty(0)
         self._visibility_count = torch.empty(0)
+        self._semantic_importance = torch.empty(0)
+        self._semantic_visibility_count = torch.empty(0)
+        self._semantic_defined = torch.empty(0, dtype=torch.bool)
+        self.importance_decay = 0.98
+        # Stable identities allow asynchronous consumers (for example the
+        # online scene graph) to survive row compaction after pruning.
+        self._gaussian_ids = torch.empty(0, dtype=torch.long)
+        self._next_gaussian_id = 0
 
         self.include_feature = include_feature
         self.semantic_representation = "codebook"
@@ -118,6 +126,11 @@ class GaussianModel(nn.Module):
                 self.denom,
                 self._importance,
                 self._visibility_count,
+                self._semantic_importance,
+                self._semantic_visibility_count,
+                self._semantic_defined,
+                self._gaussian_ids,
+                self._next_gaussian_id,
                 self.optimizer.state_dict(),
                 self.spatial_lr_scale,
             )
@@ -135,13 +148,64 @@ class GaussianModel(nn.Module):
                 self.denom,
                 self._importance,
                 self._visibility_count,
+                self._gaussian_ids,
+                self._next_gaussian_id,
                 self.optimizer.state_dict(),
                 self.spatial_lr_scale,
             )       
     
     def restore(self, model_args, training_args):
         if self.include_feature:
-            (self.active_sh_degree, 
+            if len(model_args) == 16:
+                # Checkpoints written before semantic-aware pruning.
+                (self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._language_feature_logits,
+                self._language_feature_codebooks,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                self._importance,
+                self._visibility_count,
+                opt_dict,
+                self.spatial_lr_scale) = model_args
+                self._semantic_importance = torch.zeros_like(self._importance)
+                self._semantic_visibility_count = torch.zeros_like(
+                    self._visibility_count
+                )
+                self._semantic_defined = (
+                    self._language_feature_logits.detach().abs().sum(dim=-1) > 0
+                )
+                self._initialize_gaussian_ids()
+            elif len(model_args) == 19:
+                # Semantic-aware checkpoint written before stable map IDs.
+                (self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._language_feature_logits,
+                self._language_feature_codebooks,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                self._importance,
+                self._visibility_count,
+                self._semantic_importance,
+                self._semantic_visibility_count,
+                self._semantic_defined,
+                opt_dict,
+                self.spatial_lr_scale) = model_args
+                self._initialize_gaussian_ids()
+            else:
+                (self.active_sh_degree,
             self._xyz, 
             self._features_dc, 
             self._features_rest,
@@ -155,6 +219,11 @@ class GaussianModel(nn.Module):
             denom,
             self._importance,
             self._visibility_count,
+            self._semantic_importance,
+            self._semantic_visibility_count,
+            self._semantic_defined,
+            self._gaussian_ids,
+            self._next_gaussian_id,
             opt_dict, 
             self.spatial_lr_scale) = model_args
             #self.training_setup(training_args)
@@ -165,7 +234,24 @@ class GaussianModel(nn.Module):
                 else ("pca" if self._language_feature_codebooks.ndim == 2 else "codebook")
             )
         else:
-            (self.active_sh_degree, 
+            if len(model_args) == 14:
+                (self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                self._importance,
+                self._visibility_count,
+                opt_dict,
+                self.spatial_lr_scale) = model_args
+                self._initialize_gaussian_ids()
+            else:
+                (self.active_sh_degree,
             self._xyz, 
             self._features_dc, 
             self._features_rest,
@@ -177,13 +263,39 @@ class GaussianModel(nn.Module):
             denom,
             self._importance,
             self._visibility_count,
+            self._gaussian_ids,
+            self._next_gaussian_id,
             opt_dict, 
             self.spatial_lr_scale) = model_args
             #self.training_setup(training_args)
             self.xyz_gradient_accum = xyz_gradient_accum
             self.denom = denom
+            self._semantic_importance = torch.zeros_like(self._importance)
+            self._semantic_visibility_count = torch.zeros_like(
+                self._visibility_count
+            )
+            self._semantic_defined = torch.zeros(
+                self._importance.shape[0], dtype=torch.bool,
+                device=self._importance.device,
+            )
 
         #self.optimizer.load_state_dict(opt_dict)
+
+    def _initialize_gaussian_ids(self):
+        self._gaussian_ids = torch.arange(
+            self._xyz.shape[0], dtype=torch.long, device=self._xyz.device
+        )
+        self._next_gaussian_id = int(self._xyz.shape[0])
+
+    def _append_gaussian_ids(self, count, device):
+        new_ids = torch.arange(
+            self._next_gaussian_id,
+            self._next_gaussian_id + int(count),
+            dtype=torch.long,
+            device=device,
+        )
+        self._next_gaussian_id += int(count)
+        self._gaussian_ids = torch.cat((self._gaussian_ids, new_ids), dim=0)
 
     @property
     def get_scaling(self):
@@ -228,7 +340,7 @@ class GaussianModel(nn.Module):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
     
-    def create_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs, language_feature, include_feature=False):
+    def create_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs, language_feature, include_feature=False, semantic_defined=None):
         # Create initial gaussian map
         # Initialize with rotations/scales from gicp
 
@@ -259,6 +371,15 @@ class GaussianModel(nn.Module):
         #to speed up
         self._importance = torch.zeros((self.get_xyz.shape[0], 1),device="cuda")
         self._visibility_count = torch.zeros((self.get_xyz.shape[0],1),device="cuda")
+        self._semantic_importance = torch.zeros_like(self._importance)
+        self._semantic_visibility_count = torch.zeros_like(self._visibility_count)
+        if semantic_defined is None:
+            semantic_defined = include_feature and language_feature is not None
+        self._semantic_defined = torch.full(
+            (self.get_xyz.shape[0],), bool(semantic_defined),
+            dtype=torch.bool, device="cuda",
+        )
+        self._initialize_gaussian_ids()
 
         self.trackable_mask = torch.zeros((self.get_xyz.shape[0]), dtype=torch.bool, device="cuda")
         self.trackable_mask[(trackable_idxs)] = 1
@@ -267,7 +388,7 @@ class GaussianModel(nn.Module):
         
         torch.cuda.empty_cache()
     
-    def add_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs, language_feature):
+    def add_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs, language_feature, semantic_defined=None):
         # Add new gaussians to the whole gaussian map
         # Initialize with rotations/scales from gicp
         fused_point_cloud = points
@@ -292,6 +413,16 @@ class GaussianModel(nn.Module):
         self.new_opacities = nn.Parameter(opacities.requires_grad_(True))
         self.new_importance = torch.zeros((self.new_xyz.shape[0], 1),device="cuda")
         self.new_visibility_count = torch.zeros((self.new_xyz.shape[0],1),device="cuda")
+        self.new_semantic_importance = torch.zeros_like(self.new_importance)
+        self.new_semantic_visibility_count = torch.zeros_like(
+            self.new_visibility_count
+        )
+        if semantic_defined is None:
+            semantic_defined = self.include_feature and language_feature is not None
+        self.new_semantic_defined = torch.full(
+            (self.new_xyz.shape[0],), bool(semantic_defined),
+            dtype=torch.bool, device="cuda",
+        )
 
         if self.include_feature:
             language_feature = torch.nn.functional.normalize(
@@ -320,7 +451,9 @@ class GaussianModel(nn.Module):
         # self.trackable_mask = torch.concat([self.trackable_mask, self.new_trackable_mask], dim=0)
         self.densification_postfix(self.new_xyz, self.new_features_dc, 
                                    self.new_features_rest, self.new_opacities,
-                                   self.new_scaling, self.new_rotation, self.new_trackable_mask, self.new_language_feature_logits, self.new_importance, self.new_visibility_count)
+                                   self.new_scaling, self.new_rotation, self.new_trackable_mask, self.new_language_feature_logits, self.new_importance, self.new_visibility_count,
+                                   self.new_semantic_importance, self.new_semantic_visibility_count,
+                                   self.new_semantic_defined)
         new_keyframe_idx = torch.zeros((self.new_xyz.shape[0], self.keyframe_idx.shape[1]), device="cuda", dtype=torch.bool)
         # Expanding keyframe_idx table
         # Add new gaussians
@@ -714,10 +847,22 @@ class GaussianModel(nn.Module):
         self.keyframe_idx = self.keyframe_idx[valid_points_mask]
         self._importance = self._importance[valid_points_mask]
         self._visibility_count = self._visibility_count[valid_points_mask]
+        self._semantic_importance = self._semantic_importance[valid_points_mask]
+        self._semantic_visibility_count = self._semantic_visibility_count[
+            valid_points_mask
+        ]
+        self._semantic_defined = self._semantic_defined[valid_points_mask]
+        self._gaussian_ids = self._gaussian_ids[valid_points_mask]
 
 
 
-    def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_trackable_mask, new_language_feature, new_importance=None, new_visibility_count=None):
+    def densification_postfix(
+        self, new_xyz, new_features_dc, new_features_rest, new_opacities,
+        new_scaling, new_rotation, new_trackable_mask, new_language_feature,
+        new_importance=None, new_visibility_count=None,
+        new_semantic_importance=None, new_semantic_visibility_count=None,
+        new_semantic_defined=None,
+    ):
         d = {"xyz": new_xyz,
         "f_dc": new_features_dc,
         "f_rest": new_features_rest,
@@ -752,6 +897,24 @@ class GaussianModel(nn.Module):
             self._importance = torch.cat([self._importance, new_importance],dim=0)
         if new_visibility_count is not None:
             self._visibility_count = torch.cat([self._visibility_count, new_visibility_count],dim=0)
+        if new_semantic_importance is None:
+            new_semantic_importance = torch.zeros_like(new_importance)
+        if new_semantic_visibility_count is None:
+            new_semantic_visibility_count = torch.zeros_like(new_visibility_count)
+        if new_semantic_defined is None:
+            new_semantic_defined = torch.zeros(
+                new_xyz.shape[0], dtype=torch.bool, device=new_xyz.device
+            )
+        self._semantic_importance = torch.cat(
+            [self._semantic_importance, new_semantic_importance], dim=0
+        )
+        self._semantic_visibility_count = torch.cat(
+            [self._semantic_visibility_count, new_semantic_visibility_count], dim=0
+        )
+        self._semantic_defined = torch.cat(
+            [self._semantic_defined, new_semantic_defined], dim=0
+        )
+        self._append_gaussian_ids(new_xyz.shape[0], new_xyz.device)
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
         #torch.cuda.empty_cache()
@@ -778,13 +941,24 @@ class GaussianModel(nn.Module):
         new_trackable_mask = self.trackable_mask[selected_pts_mask].repeat(N)
         new_importance = self._importance[selected_pts_mask].repeat(N,1)
         new_visibility_count = self._visibility_count[selected_pts_mask].repeat(N,1)
+        new_semantic_importance = self._semantic_importance[selected_pts_mask].repeat(N, 1)
+        new_semantic_visibility_count = self._semantic_visibility_count[
+            selected_pts_mask
+        ].repeat(N, 1)
+        new_semantic_defined = self._semantic_defined[selected_pts_mask].repeat(N)
 
         if self.include_feature:
             new_language_feature = self._language_feature_logits[selected_pts_mask].repeat(N,1)
         else:
             new_language_feature = None
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_trackable_mask, new_language_feature, new_importance, new_visibility_count)
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest, new_opacity,
+            new_scaling, new_rotation, new_trackable_mask,
+            new_language_feature, new_importance, new_visibility_count,
+            new_semantic_importance, new_semantic_visibility_count,
+            new_semantic_defined,
+        )
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -808,13 +982,24 @@ class GaussianModel(nn.Module):
         new_trackable_mask = self.trackable_mask[selected_pts_mask]
         new_importance = self._importance[selected_pts_mask]
         new_visibility_count = self._visibility_count[selected_pts_mask]
+        new_semantic_importance = self._semantic_importance[selected_pts_mask]
+        new_semantic_visibility_count = self._semantic_visibility_count[
+            selected_pts_mask
+        ]
+        new_semantic_defined = self._semantic_defined[selected_pts_mask]
 
         if self.include_feature:
             new_language_feature = self._language_feature_logits[selected_pts_mask]
         else:
             new_language_feature = None
 
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_trackable_mask, new_language_feature, new_importance, new_visibility_count)
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest, new_opacities,
+            new_scaling, new_rotation, new_trackable_mask,
+            new_language_feature, new_importance, new_visibility_count,
+            new_semantic_importance, new_semantic_visibility_count,
+            new_semantic_defined,
+        )
         #torch.cuda.empty_cache()
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
@@ -933,7 +1118,6 @@ class GaussianModel(nn.Module):
         return torch.stack(language_features, dim=1)
 
     def add_importance(self, score, visibility_filter):
-        decay = 0.98
         min_visible_score = 1e-8
 
         visible_score = score[visibility_filter].abs()
@@ -946,10 +1130,72 @@ class GaussianModel(nn.Module):
         )
 
         self._importance[visibility_filter] = (
-            decay * self._importance[visibility_filter]
-            + (1.0 - decay) * visible_score
+            self.importance_decay * self._importance[visibility_filter]
+            + (1.0 - self.importance_decay) * visible_score
         )
         self._visibility_count[visibility_filter] += 1
+
+    def mark_semantic_defined(self, indices):
+        """Record that semantic features have been assigned to Gaussians."""
+        if self._semantic_defined.numel() == 0:
+            return
+        self._semantic_defined[indices] = True
+
+    def add_semantic_importance(self, semantic_gradient, visibility_filter):
+        """Accumulate per-Gaussian semantic-gradient magnitude on valid semantics."""
+        if semantic_gradient is None or self._semantic_defined.numel() == 0:
+            return False
+
+        observed = visibility_filter & self._semantic_defined
+        if not observed.any():
+            return False
+
+        # Reduce an arbitrary semantic representation to one score per Gaussian.
+        semantic_score = semantic_gradient.detach().float().square().mean(
+            dim=-1, keepdim=True
+        )
+        semantic_score = torch.nan_to_num(
+            semantic_score, nan=0.0, posinf=0.0, neginf=0.0
+        )
+        visible_score = semantic_score[observed]
+        mean_score = visible_score.mean()
+        if not torch.isfinite(mean_score) or mean_score <= 0:
+            # Do not turn a missing rasterizer semantic gradient into evidence
+            # that all visible semantic Gaussians are unimportant.
+            return False
+        visible_score = visible_score / mean_score.clamp_min(1e-8)
+
+        self._semantic_importance[observed] = (
+            self.importance_decay * self._semantic_importance[observed]
+            + (1.0 - self.importance_decay) * visible_score
+        )
+        self._semantic_visibility_count[observed] += 1
+        return True
+
+    def _bias_corrected_importance(self, values, observations):
+        correction = 1.0 - torch.pow(
+            torch.full_like(observations, self.importance_decay), observations
+        )
+        return values / correction.clamp_min(1e-8)
+
+    @staticmethod
+    def _percentile_ranks(values, mask):
+        """Return [0, 1] ranks for masked values without changing unmasked data."""
+        ranks = torch.zeros_like(values)
+        selected = values[mask]
+        if selected.numel() == 0:
+            return ranks
+        order = torch.argsort(selected)
+        ordered_ranks = torch.zeros_like(selected)
+        if selected.numel() == 1:
+            ordered_ranks[order] = 1.0
+        else:
+            ordered_ranks[order] = torch.linspace(
+                0.0, 1.0, selected.numel(), device=values.device,
+                dtype=values.dtype,
+            )
+        ranks[mask] = ordered_ranks
+        return ranks
 
     def compute_layer_feature_map(self, language_feature_weight_map, layer_idx):
         D, H, W = language_feature_weight_map.shape
@@ -978,16 +1224,53 @@ class GaussianModel(nn.Module):
         language_feature = language_feature.view(512, H, W)
         return language_feature
     
-    def prune_gaussians(self, percent, min_observations=3):
-        
-        importance = self._importance.squeeze(-1)
-        eligible = self._visibility_count.squeeze(-1) >= min_observations
+    def prune_gaussians(
+        self, percent, min_observations=3, semantic_weight=0.2
+    ):
+        geom_count = self._visibility_count.squeeze(-1)
+        eligible = geom_count >= min_observations
 
         if not eligible.any():
             return
-        threshold = torch.quantile(importance, percent)
-        prune_mask = eligible & (importance <= threshold)
-        print(f"Pruning {prune_mask.sum().item()} gaussians out of {importance.shape[0]} based on importance score.")
+
+        geom_average = self._bias_corrected_importance(
+            self._importance, self._visibility_count
+        ).squeeze(-1)
+        geom_rank = self._percentile_ranks(geom_average, eligible)
+        combined_rank = geom_rank.clone()
+
+        semantic_mature = (
+            eligible
+            & self._semantic_defined
+            & (self._semantic_visibility_count.squeeze(-1) >= min_observations)
+        )
+        if semantic_weight > 0 and semantic_mature.any():
+            semantic_average = self._bias_corrected_importance(
+                self._semantic_importance, self._semantic_visibility_count
+            ).squeeze(-1)
+            semantic_rank = self._percentile_ranks(
+                semantic_average, semantic_mature
+            )
+            combined_rank[semantic_mature] = (
+                (1.0 - semantic_weight) * geom_rank[semantic_mature]
+                + semantic_weight * semantic_rank[semantic_mature]
+            )
+
+        eligible_indices = torch.nonzero(eligible, as_tuple=False).squeeze(-1)
+        prune_count = min(
+            eligible_indices.numel(),
+            max(1, int(percent * eligible_indices.numel())),
+        )
+        local_prune = torch.topk(
+            combined_rank[eligible_indices], prune_count, largest=False
+        ).indices
+        prune_mask = torch.zeros_like(eligible)
+        prune_mask[eligible_indices[local_prune]] = True
+        print(
+            f"Pruning {prune_count} of {eligible_indices.numel()} eligible "
+            f"Gaussians ({semantic_mature.sum().item()} with mature semantic "
+            f"importance; semantic weight={semantic_weight:.2f})."
+        )
         self.prune_points(prune_mask)
 
     def save_ply(self, path):
