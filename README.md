@@ -13,8 +13,9 @@ contain SLAM training/mapping code, datasets, model checkpoints, or results.
 - Python 3.9 or 3.10
 
 The reference environment uses PyTorch 2.5.1, torchvision 0.20.1, and CUDA 12.1.
-The machine must have an NVIDIA driver and a CUDA 12.x toolkit providing
-`nvcc`, because the two custom CUDA extensions are compiled locally.
+The machine must have a compatible NVIDIA driver. CUDA 12.1 and `nvcc` are
+installed inside the Conda environment, so the system CUDA installation is not
+modified.
 
 Create the complete Conda environment and install the extensions with:
 
@@ -23,17 +24,22 @@ git clone <repository-url>
 cd Open-VocGSSLAM-Eval
 conda env create -f environment.yml
 conda activate openvocgsslam-eval
+source env_vars.sh
 ./install.sh
 python scripts/smoke_test.py
 ```
 
-Before running `install.sh`, verify the toolchain:
+Before running `install.sh`, verify the isolated toolchain:
 
 ```bash
 nvidia-smi
 nvcc --version
 python -c "import torch; print(torch.__version__, torch.version.cuda)"
 ```
+
+Run `source env_vars.sh` after each new shell activation, before compiling the
+extensions. It sets `CUDA_HOME` to the active Conda environment rather than the
+computer's system CUDA directory.
 
 Do not install another `diff-gaussian-rasterization` implementation into the
 same environment. This repository includes the customized rasterizer required
