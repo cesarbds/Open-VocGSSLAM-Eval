@@ -1,0 +1,11 @@
+numpy
+scipy
+opencv-python
+matplotlib
+tqdm
+plyfile
+open3d
+torchmetrics==1.8.0
+open-clip-torch==3.0.0
+faiss-cpu==1.11.0
+jaxtyping
