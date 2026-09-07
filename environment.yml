@@ -1,0 +1,25 @@
+name: openvocgsslam-eval
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - cmake
+  - ninja
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - pytorch-cuda=12.1
+  - pip:
+      - numpy
+      - scipy
+      - opencv-python
+      - matplotlib
+      - tqdm
+      - plyfile
+      - open3d
+      - torchmetrics==1.8.0
+      - open-clip-torch==3.0.0
+      - faiss-cpu==1.11.0
+      - jaxtyping
