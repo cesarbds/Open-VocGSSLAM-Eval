@@ -45,6 +45,11 @@ Do not install another `diff-gaussian-rasterization` implementation into the
 same environment. This repository includes the customized rasterizer required
 by `render_3`.
 
+If evaluation reports that a CUDA function expected a different number of
+arguments, an incompatible precompiled rasterizer is being imported. Re-run
+`./install.sh`, then use `python scripts/smoke_test.py` to verify that both the
+Python module and `_C` binary paths belong to the active Conda environment.
+
 ## Expected input layout
 
 Copy or mount data and results outside Git:

@@ -10,6 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import torch
 
+import diff_gaussian_rasterization
+from diff_gaussian_rasterization import _C
 from diff_gaussian_rasterization import GaussianRasterizer
 from gaussian_renderer import render_3
 from scene.gaussian_model import GaussianModel
@@ -20,7 +22,9 @@ def main():
         raise RuntimeError("CUDA GPU is required by the Gaussian rasterizer")
     model = GaussianModel(sh_degree=3, include_feature=True)
     print(f"CUDA: {torch.version.cuda}; GPU: {torch.cuda.get_device_name(0)}")
-    print(f"Renderer: {GaussianRasterizer.__module__}")
+    print(f"Renderer Python: {diff_gaussian_rasterization.__file__}")
+    print(f"Renderer CUDA: {_C.__file__}")
+    print("Renderer layout: 64 semantic channels, 12 quick-render coefficients")
     print(f"Gaussian model: {type(model).__name__}; render function: {render_3.__name__}")
     print("Smoke test passed")
 
