@@ -51,36 +51,18 @@ arguments, an incompatible precompiled rasterizer is being imported. Re-run
 `./install.sh`, then use `python scripts/smoke_test.py` to verify that both the
 Python module and `_C` binary paths belong to the active Conda environment.
 
-## Expected input layout
+## Run live tracking and mapping
 
-Copy or mount data and results outside Git:
-
-```text
-Replica/
-  cam_params.json
-  room0/
-    images/
-    depth_images/
-    semantic_class/
-    traj.txt
-    info_semantic.json
-saved_results/room0/
-  estimated_poses.npy
-  geometry_refinement/iter_001000/
-    scene_final.ply
-    scene_final.pth
-```
-
-## Run tracking and mapping
-
-For a recorded RGB-D sequence in one of the supported layouts:
+The runtime consumes synchronized ZED RGB-D messages directly and does not
+preload a dataset into memory. Source ROS 2 and your ZED workspace, start the
+ZED driver, then run:
 
 ```bash
 python main.py \
-  --dataset replica \
-  --dataset-path Replica \
-  --scene-id room0 \
-  --save-path saved_results/room0 \
+  --ros-rgb-topic /zed/zed_node/rgb/color/rect/image \
+  --ros-depth-topic /zed/zed_node/depth/depth_registered \
+  --ros-camera-info-topic /zed/zed_node/rgb/color/rect/camera_info \
+  --save-path saved_results/zed_live \
   --no-include-feature \
   --pruning-mode simple
 ```
@@ -89,11 +71,14 @@ The runtime orchestration is in `src/OSGSSLAM.py`: `Tracker` and `Mapper` run
 as separate processes and exchange cameras and Gaussian targets through the
 objects in `scene/shared_objs.py`.
 
-For ROS2/ZED, keep this orchestration and replace the finite file/trajectory
-source used by `Tracker.tracking()` with the synchronized RGB, registered-depth,
-timestamp and calibrated-intrinsics messages from the ROS adapter. The tracker
-publishes accepted insertion keyframes to the mapper; semantics should remain
-in the mapper so feature extraction does not delay pose tracking.
+Rerun visualization is enabled by default and shows the live camera, tracked
+point clouds, and mapper renders. Pass `--no-rerun-viewer` for a headless run.
+
+The RGB and registered-depth streams are approximately synchronized (30 ms by
+default), and intrinsics are read from `CameraInfo`. Use `--max-frames N` for a
+bounded run; the default of zero runs until ROS shutdown or Ctrl-C. The tracker
+publishes accepted insertion keyframes to the mapper; semantics remain in the
+mapper so feature extraction does not delay pose tracking.
 
 Runtime assets are intentionally excluded from Git. Supply the paths required
 by the selected mode, including the language codebook and segmentation model

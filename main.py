@@ -1,14 +1,8 @@
 import os
-import hydra
-from omegaconf import DictConfig
 import argparse
 import torch
-import open_clip
-import numpy as np
-import cv2
 from src.OSGSSLAM import OSGSSLAM
 from argparse import ArgumentParser
-from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor ###pass this to a semantic object
 
 os.environ["TORCH_USE_CUDA_DSA"] = "1"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -53,22 +47,36 @@ def main():
         help="Directory for checkpoints, PLY exports, and run outputs.",
     )
     parser.add_argument(
-        "--dataset-path",
-        type=str,
-        default=None,
-        help="Dataset root containing cam_params.json and scene directories.",
+        "--ros-rgb-topic", default="/zed/zed_node/rgb/color/rect/image",
+        help="Rectified ZED color Image topic.",
     )
     parser.add_argument(
-        "--dataset",
-        choices=("replica", "scannet", "tum"),
-        default=None,
-        help="Dataset layout used by the tracker, mapper, and trajectory loader.",
+        "--ros-depth-topic", default="/zed/zed_node/depth/depth_registered",
+        help="Registered ZED depth Image topic.",
     )
     parser.add_argument(
-        "--scene-id",
-        type=str,
-        default=None,
-        help="Scene directory under --dataset-path, for example room1 or office3.",
+        "--ros-camera-info-topic",
+        default="/zed/zed_node/rgb/color/rect/camera_info",
+        help="CameraInfo topic for the rectified RGB/registered-depth frame.",
+    )
+    parser.add_argument("--ros-sync-queue-size", type=int, default=10)
+    parser.add_argument(
+        "--ros-sync-slop", type=float, default=0.03,
+        help="Maximum RGB/depth timestamp difference in seconds.",
+    )
+    parser.add_argument(
+        "--max-frames", type=int, default=0,
+        help="Stop after this many ROS frames; 0 runs until Ctrl-C/shutdown.",
+    )
+    parser.add_argument(
+        "--input-width", type=int, default=0,
+        help="Resize live RGB-D frames to this width; 0 keeps native ZED resolution.",
+    )
+    parser.add_argument(
+        "--rerun-viewer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Launch and stream the live camera, point cloud, and renders to Rerun.",
     )
     parser.add_argument(
         "--language-codebooks-path",
@@ -186,11 +194,6 @@ def main():
             "Capacity of the shared CPU Gaussian target used by ICP tracking. "
             "Increase this for large scenes (default: 1,000,000)."
         ),
-    )
-    parser.add_argument("--start-frame", type=int, default=0)
-    parser.add_argument(
-        "--end-frame", type=int, default=2000,
-        help="Exclusive dataset frame limit, useful for short pipeline tests.",
     )
     parser.add_argument(
         "--optimize-semantic-logits",

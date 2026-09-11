@@ -20,19 +20,15 @@ from src.mapper import Mapper
 # from src.utils.datasets import RGB_NoPose
 # from src.gui import gui_utils, slam_gui
 # from thirdparty.gaussian_splatting.scene.gaussian_model import GaussianModel
-from src.feat_extractor import SemanticExtractor
-from langsplat_extraction_feature import LangSplatExtractionFeature
 from src.utils.utils import read_json_file
 #from src.utils.pcd_utils import PointCloudUtils, SharedPoints, SharedGaussians, SharedTargetPoints, load_pointcloud_pt
 from scene.shared_objs import SharedCam, SharedGaussians, SharedPoints, SharedTargetPoints
-from utils.traj_utils import TrajManager
 from src.utils.graphics_utils import focal2fov
 from src.Render import SharedCamera
 import rerun as rr
-from datasets.dataconfig import load_dataset_config, get_dataset
-from pathlib import Path
 import threading
 from arguments import SLAMParameters
+from src.ros2_input import receive_initial_frame
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -40,21 +36,24 @@ class OSGSSLAM(SLAMParameters):
     def __init__(self, params):
         super().__init__()
 
-        requested_dataset = getattr(params, "dataset", None)
-        if requested_dataset is not None:
-            self.dataset = requested_dataset.lower()
-
-        dataset_path = getattr(params, "dataset_path", None)
-        if dataset_path is not None:
-            self._dataset_path = os.path.abspath(dataset_path)
-        scene_id = getattr(params, "scene_id", None)
-        if scene_id is not None:
-            if not scene_id or Path(scene_id).name != scene_id:
-                raise ValueError("--scene-id must be a single scene-directory name")
-            self.scene_id = scene_id
-        scene_path = Path(self._dataset_path) / self.scene_id
-        if not scene_path.is_dir():
-            raise FileNotFoundError(f"Dataset scene does not exist: {scene_path}")
+        self.dataset = "ros2"
+        self.scene_id = "zed_live"
+        self.ros_rgb_topic = params.ros_rgb_topic
+        self.ros_depth_topic = params.ros_depth_topic
+        self.ros_camera_info_topic = params.ros_camera_info_topic
+        self.ros_sync_queue_size = params.ros_sync_queue_size
+        self.ros_sync_slop = params.ros_sync_slop
+        self.max_frames = params.max_frames
+        self.input_width = params.input_width
+        self.rerun_viewer = params.rerun_viewer
+        if self.ros_sync_queue_size < 1:
+            raise ValueError("--ros-sync-queue-size must be at least 1")
+        if self.ros_sync_slop <= 0:
+            raise ValueError("--ros-sync-slop must be positive")
+        if self.max_frames < 0:
+            raise ValueError("--max-frames cannot be negative")
+        if self.input_width < 0:
+            raise ValueError("--input-width cannot be negative")
 
         # Keep command-line settings when this object is recreated in worker
         # processes through the mapper/tracker constructors.
@@ -125,8 +124,6 @@ class OSGSSLAM(SLAMParameters):
         self.semantic_cache_dir = (
             os.path.abspath(semantic_cache_dir) if semantic_cache_dir else None
         )
-        self.start_frame = getattr(params, "start_frame", self.start_frame)
-        self.end_frame = getattr(params, "end_frame", self.end_frame)
         self.semantic_training_stage = getattr(params, "semantic_training_stage", 1)
         self.semantic_refine_iters = getattr(params, "semantic_refine_iters", 0)
         self.semantic_refine_save_every = getattr(
@@ -274,14 +271,18 @@ class OSGSSLAM(SLAMParameters):
             if not 0.0 < keyframe_th <= 1.0:
                 raise ValueError("--keyframe-th must be in (0, 1]")
             self.kf_threshold = float(keyframe_th)
-        save_path = getattr(params, "save_path", None)
-        if save_path is not None:
-            self._save_path = os.path.abspath(save_path)
+        save_path = getattr(params, "save_path", None) or "saved_results/zed_live"
+        self._save_path = os.path.abspath(save_path)
         os.makedirs(self._save_path, exist_ok=True)
         run_config = {
-            "dataset": self.dataset,
-            "dataset_path": self._dataset_path,
-            "scene_id": self.scene_id,
+            "input": "ros2",
+            "rgb_topic": self.ros_rgb_topic,
+            "depth_topic": self.ros_depth_topic,
+            "camera_info_topic": self.ros_camera_info_topic,
+            "ros_sync_slop": self.ros_sync_slop,
+            "max_frames": self.max_frames,
+            "input_width": self.input_width,
+            "rerun_viewer": self.rerun_viewer,
             "save_path": self._save_path,
             "gs_icp_original": self.gs_icp_original,
             "downsample_rate": self.downsample_rate,
@@ -302,8 +303,6 @@ class OSGSSLAM(SLAMParameters):
             "semantic_execution": self.semantic_execution,
             "semantic_extractor": self.type_semantic_extractor,
             "semantic_representation": self.semantic_representation,
-            "start_frame": self.start_frame,
-            "end_frame": self.end_frame,
         }
         with open(os.path.join(self._save_path, "run_config.json"), "w") as handle:
             json.dump(run_config, handle, indent=2)
@@ -346,26 +345,23 @@ class OSGSSLAM(SLAMParameters):
                 f"(semantic stage: {self.semantic_training_stage})"
             )
 
-        root_camera_path = Path(self._dataset_path) / "cam_params.json"
-        scene_camera_path = scene_path / "cam_params.json"
-        camera_path = scene_camera_path if scene_camera_path.is_file() else root_camera_path
-        if not camera_path.is_file():
-            raise FileNotFoundError(
-                f"Camera parameters not found at {scene_camera_path} or {root_camera_path}"
-            )
-        self.camera_parameters = read_json_file(str(camera_path))
-        self.H = self.camera_parameters['camera']['H']
-        self.W = self.camera_parameters['camera']['W']
-        self.fx = self.camera_parameters['camera']['fx']
-        self.fy = self.camera_parameters['camera']['fy']
-        self.cx = self.camera_parameters['camera']['cx']
-        self.cy = self.camera_parameters['camera']['cy']
-        self.depth_scale = self.camera_parameters['camera']['scale']
-
-        self._dataset_path = self._dataset_path+"/"+self.scene_id
-        ##traj manager - analisar ground truth with estimated trajectory
-        self.gt_manager = TrajManager(self.dataset, self._dataset_path,  self.start_frame, self.end_frame, self.stride)
-        self.poses = [self.gt_manager.gt_poses[self.start_frame]]
+        initial_frame = receive_initial_frame(
+            rgb_topic=self.ros_rgb_topic,
+            depth_topic=self.ros_depth_topic,
+            camera_info_topic=self.ros_camera_info_topic,
+            queue_size=self.ros_sync_queue_size,
+            sync_slop=self.ros_sync_slop,
+            output_width=self.input_width,
+        )
+        self.H, self.W = initial_frame.rgb_bgr.shape[:2]
+        self.fx, self.fy = initial_frame.fx, initial_frame.fy
+        self.cx, self.cy = initial_frame.cx, initial_frame.cy
+        self.depth_scale = initial_frame.depth_scale
+        self.camera_parameters = {
+            "camera": {"H": self.H, "W": self.W, "fx": self.fx, "fy": self.fy,
+                       "cx": self.cx, "cy": self.cy, "scale": self.depth_scale}
+        }
+        self.initial_pose = np.eye(4, dtype=np.float32)
         ##Test if pcd + downsample works
         ###create image loader
         try:
@@ -376,15 +372,15 @@ class OSGSSLAM(SLAMParameters):
         if self.rerun_viewer:
             rr.init("3dgsviewer")
             rr.spawn(connect=False)
-        #test_rgb_img, test_depth_img = self.dataset[0]
-        test_rgb_img, test_depth_img = self.get_test_image(f"{self._dataset_path}/images")
+        test_rgb_img, test_depth_img = initial_frame.rgb_bgr, initial_frame.depth
         self.downsample_idxs, self.x_pre, self.y_pre = self.set_downsample_filter(self.downsample_rate)
         test_points, _, _, _ = self.downsample_and_make_pointcloud2(test_depth_img, test_rgb_img) # embeddings, current_image, depth_image, self.tracker.camera_parameters, w2c,
         # test_points =  test_points.shape[0]
         # Get size of final poses
-        num_total_poses = len(self.gt_manager.gt_poses)
+        pose_capacity = self.max_frames if self.max_frames > 0 else 100_000
         if not self.use_semantics_gt and self.include_feature:
             if self.type_semantic_extractor == "langsplat":
+                from langsplat_extraction_feature import LangSplatExtractionFeature
                 # LangSplatV2 features are generated only for accepted Gaussian
                 # keyframes and cached by Mapper; no preprocessed .npy files.
                 self.extractor = LangSplatExtractionFeature(
@@ -393,9 +389,11 @@ class OSGSSLAM(SLAMParameters):
                     mobile_sam_checkpoint_path=self.mobile_sam_checkpoint,
                 )
             elif self.type_semantic_extractor in ("raw", "full_mask"):
+                from src.feat_extractor import SemanticExtractor
                 self.semantic_extractor = SemanticExtractor(self, self.H, self.W)
 
             elif self.type_semantic_extractor == "concept_fusion":
+                from src.feat_extractor import SemanticExtractor
                 # Models are initialized once; inference runs only in Mapper
                 # after the tracker accepts a frame for map insertion.
                 self.semantic_extractor = SemanticExtractor(self, self.H, self.W)
@@ -437,7 +435,7 @@ class OSGSSLAM(SLAMParameters):
         self.end_of_dataset = torch.zeros((1)).int()
         self.target_gaussians_ready = torch.zeros((1)).int()
         self.new_points_ready = torch.zeros((1)).int()
-        self.final_pose = torch.zeros((num_total_poses,4,4)).float()
+        self.final_pose = torch.zeros((pose_capacity,4,4)).float()
         self.demo = torch.zeros((1)).int()
         self.is_mapping_process_started = torch.zeros((1)).int()
         self.iter_shared = torch.zeros((1)).int()
@@ -462,9 +460,8 @@ class OSGSSLAM(SLAMParameters):
         self.iter_shared.share_memory_()
         self.first_step.share_memory_()
         print("First part ok")
-        ###MAPPER AND TRACKER
-        self.mapper = Mapper(self)#GS3LAM
-        self.tracker = Tracker(self)#GS-ICP
+        # Mapper and Tracker own native/CUDA state and are therefore created
+        # inside their respective spawned processes, never in the parent.
 
     def set_downsample_filter( self, downsample_scale):
         # Get sampling idxs
@@ -501,34 +498,11 @@ class OSGSSLAM(SLAMParameters):
         colors = colors[zero_filter]
 
         return points.numpy(), colors.numpy(), z_values.numpy(), filter[0].numpy()
-    def get_test_image(self, images_folder):
-
-        if self.dataset in ("replica", "scannet"):
-            images_folder = os.path.join(self._dataset_path, "images")
-            print(self._dataset_path)
-            print(images_folder)
-            image_files = os.listdir(images_folder)
-            image_files = sorted(image_files.copy())
-            image_name = image_files[0].split(".")[0]
-            depth_image_name = f"depth{image_name[5:]}"
-            rgb_image = cv2.imread(f"{self._dataset_path}/images/{image_name}.jpg")
-            depth_image = np.array(o3d.io.read_image(f"{self._dataset_path}/depth_images/{depth_image_name}.png")).astype(np.float32)
-
-        elif self.dataset == "tum":
-            rgb_folder = os.path.join(self._dataset_path, "rgb")
-            depth_folder = os.path.join(self._dataset_path, "depth")
-            rgb_file = os.listdir(rgb_folder)[0]
-            depth_file = os.listdir(depth_folder)[0]
-            rgb_image = cv2.imread(os.path.join(rgb_folder, rgb_file))
-            depth_image = np.array(o3d.io.read_image(os.path.join(depth_folder, depth_file))).astype(np.float32)
-
-        return rgb_image, depth_image
-
     def tracking(self, rank):
-        self.tracker.run()
+        Tracker(self).run()
 
     def mapping(self, rank):
-        self.mapper.run()
+        Mapper(self).run()
 
     def run(self):
 

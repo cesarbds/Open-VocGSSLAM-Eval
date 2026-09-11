@@ -16,7 +16,7 @@ from scipy.spatial.transform import Rotation
 import rerun as rr
 sys.path.append(os.path.dirname(__file__))
 from arguments import SLAMParameters
-from utils.traj_utils import TrajManager
+from src.ros2_input import Ros2RgbdStream
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -26,12 +26,17 @@ class Tracker(SLAMParameters):
         # SLAMParameters defaults to room0. Preserve the runtime scene selected
         # by main.py before this worker constructs paths or loads trajectories.
         self.dataset = slam.dataset
-        self._dataset_path = os.path.dirname(slam._dataset_path)
         self.scene_id = slam.scene_id
         self.include_feature = slam.include_feature
-        self.start_frame = slam.start_frame
-        self.end_frame = slam.end_frame
         self.stride = slam.stride
+        self.ros_rgb_topic = slam.ros_rgb_topic
+        self.ros_depth_topic = slam.ros_depth_topic
+        self.ros_camera_info_topic = slam.ros_camera_info_topic
+        self.ros_sync_queue_size = slam.ros_sync_queue_size
+        self.ros_sync_slop = slam.ros_sync_slop
+        self.max_frames = slam.max_frames
+        self.input_width = slam.input_width
+        self.rerun_viewer = slam.rerun_viewer
 
         self.iter_shared = slam.iter_shared
 
@@ -54,12 +59,8 @@ class Tracker(SLAMParameters):
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
 
-        self.reg = pygicp.FastGICP()
-
-        # Camera poses
-        self.traj_path = self._dataset_path + '/' + self.scene_id
-        self.trajmanager = TrajManager(self.dataset, self.traj_path, self.start_frame, self.end_frame, self.stride)
-        self.poses = [self.trajmanager.gt_poses[0]]
+        # ROS input has no ground-truth trajectory; the first camera defines world.
+        self.poses = [slam.initial_pose.copy()]
         # Keyframes(added to map gaussians)
         self.last_t = time.time()
         self.iteration_images = 0
@@ -108,24 +109,40 @@ class Tracker(SLAMParameters):
         self.tracking()
 
     def tracking(self):
+        # pygicp wraps a native C++ object and cannot be pickled by the spawn
+        # multiprocessing context. Construct it inside the tracker child.
+        self.reg = pygicp.FastGICP()
         tt = torch.zeros((1,1)).float().cuda()
 
         if self.rerun_viewer:
             rr.init("3dgsviewer")
             rr.connect_grpc()
-        self.images_path = os.path.join(self._dataset_path, self.scene_id)
-        self.rgb_images, self.depth_images = self.get_images(f"{self.images_path}/images")
-        self.num_images = len(self.rgb_images)
+        stream = Ros2RgbdStream(
+            rgb_topic=self.ros_rgb_topic,
+            depth_topic=self.ros_depth_topic,
+            camera_info_topic=self.ros_camera_info_topic,
+            queue_size=self.ros_sync_queue_size,
+            sync_slop=self.ros_sync_slop,
+            output_width=self.input_width,
+        )
+        self.num_images = self.max_frames if self.max_frames > 0 else float("inf")
         self.reg.set_max_correspondence_distance(self.max_correspondence_distance)
         self.reg.set_max_knn_distance(self.icp['knn_maxd'])
         if_mapping_keyframe = False
         self.total_start_time = time.time()
-        pbar = tqdm(total=self.num_images)
+        pbar = tqdm(total=self.max_frames or None)
 
-        for ii in range(self.num_images):
+        for ii, frame in enumerate(stream.frames()):
+            if self.max_frames > 0 and ii >= self.max_frames:
+                break
             self.iter_shared[0] = ii
-            current_image = self.rgb_images.pop(0)
-            depth_image = self.depth_images.pop(0)
+            current_image = frame.rgb_bgr
+            depth_image = frame.depth
+            if current_image.shape[:2] != (self.H, self.W):
+                raise RuntimeError(
+                    "ZED image dimensions changed during the run: "
+                    f"expected {(self.H, self.W)}, received {current_image.shape[:2]}"
+                )
             current_image = cv2.cvtColor(current_image, cv2.COLOR_RGB2BGR)
             #visualize_rendered_rgb(current_image, save_path="test_output/original_rgb.png", show=True, title="Original RGB")
             # Geometry is required for ICP on every frame. Semantic extraction
@@ -259,7 +276,7 @@ class Tracker(SLAMParameters):
                     and self.from_last_tracking_keyframe + 1
                     >= self.max_gaussian_keyframe_gap
                 )
-                if (self.iteration_images >= self.num_images - 1
+                if ((self.max_frames > 0 and self.iteration_images >= self.max_frames - 1)
                     or overlap_ratio < self.kf_threshold
                     or force_gaussian_keyframe):
                     if_tracking_keyframe = True
@@ -364,22 +381,23 @@ class Tracker(SLAMParameters):
             self.iter_time_idx_shared[0] = self.iteration_images
 
         # Tracking end
+        stream.close()
         pbar.close()
         tracking_elapsed = time.time() - self.total_start_time
         print(
-            f"Tracking final FPS: {self.num_images / max(tracking_elapsed, 1e-9):.2f} "
-            f"({self.num_images} frames, {tracking_elapsed:.2f}s wall time)"
+            f"Tracking final FPS: {self.iteration_images / max(tracking_elapsed, 1e-9):.2f} "
+            f"({self.iteration_images} frames, {tracking_elapsed:.2f}s wall time)"
         )
         estimated_poses = np.asarray(self.poses, dtype=np.float32)
-        self.final_pose[: estimated_poses.shape[0], :, :] = torch.from_numpy(
-            estimated_poses
+        shared_pose_count = min(estimated_poses.shape[0], self.final_pose.shape[0])
+        self.final_pose[:shared_pose_count, :, :] = torch.from_numpy(
+            estimated_poses[:shared_pose_count]
         )
         os.makedirs(self._save_path, exist_ok=True)
         pose_path = os.path.join(self._save_path, "estimated_poses.npy")
         np.save(pose_path, estimated_poses)
         print(f"Saved {len(estimated_poses)} estimated poses to {pose_path}")
         self.end_of_dataset[0] = 1
-        gt_poses = np.array(self.trajmanager.gt_poses)
         est_poses = np.array(self.poses)
 
         # Extract translation components (x, y, z)
@@ -421,46 +439,6 @@ class Tracker(SLAMParameters):
         # plt.grid(True)
         # plt.tight_layout()
         # plt.show()
-
-    def get_language_feature(self, language_folder):
-        if self.trajmanager.which_dataset in ("replica", "scannet"):
-            feat_list = glob.glob(os.path.join(language_folder, "*_f.npy"))
-            seg_list = glob.glob(os.path.join(language_folder, "*_s.npy"))
-            feat_list = sorted(feat_list)
-            feat_list = feat_list[self.start_frame:self.end_frame]
-
-            seg_list = sorted(seg_list)
-            seg_list = seg_list[self.start_frame:self.end_frame]
-
-            return feat_list, seg_list
-
-    def get_images(self, images_folder):
-        rgb_images = []
-        depth_images = []
-        if self.trajmanager.which_dataset in ("replica", "scannet"):
-            image_files = os.listdir(images_folder)
-            # Select only the desired frame range
-            image_files = sorted(image_files.copy())
-            image_files = image_files[self.start_frame:self.end_frame]
-            for key in tqdm(image_files):
-                image_name = key.split(".")[0]
-                depth_image_name = f"depth{image_name[5:]}"
-
-                rgb_image = cv2.imread(f"{self.images_path}/images/{image_name}.jpg")
-                depth_image = np.array(o3d.io.read_image(f"{self.images_path}/depth_images/{depth_image_name}.png"))
-
-                rgb_images.append(rgb_image)
-                depth_images.append(depth_image)
-            return rgb_images, depth_images
-        elif self.trajmanager.which_dataset == "tum":
-            for i in tqdm(range(len(self.trajmanager.color_paths))):
-                rgb_image = cv2.imread(self.trajmanager.color_paths[i])
-                depth_image = np.array(o3d.io.read_image(self.trajmanager.depth_paths[i]))
-                rgb_images.append(rgb_image)
-                depth_images.append(depth_image)
-            return rgb_images, depth_images
-
-
 
     def quaternion_multiply(self, q1, Q2):
         # q1*Q2

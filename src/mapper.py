@@ -17,14 +17,12 @@ import threading
 from scipy.spatial import cKDTree
 sys.path.append(os.path.dirname(__file__))
 from arguments import SLAMParameters
-from utils.traj_utils import TrajManager
 from utils.loss_utils import l1_loss, ssim, cos_loss, semantic_loss
 from scene import GaussianModel
 from gaussian_renderer import render_3
 from tqdm import tqdm
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 import open3d as o3d
-import faiss
 import glob
 import csv
 import matplotlib.pyplot as plt
@@ -160,8 +158,8 @@ class Mapper(SLAMParameters):
         # SLAMParameters defaults to room0. Preserve the runtime scene selected
         # by main.py before this worker constructs paths or loads trajectories.
         self.dataset = slam.dataset
-        self._dataset_path = os.path.dirname(slam._dataset_path)
         self.scene_id = slam.scene_id
+        self.rerun_viewer = slam.rerun_viewer
         self.include_feature = slam.include_feature
         # SLAMParameters initializes class defaults; explicitly propagate all
         # runtime semantic CLI choices from the parent OSGSSLAM instance.
@@ -172,10 +170,6 @@ class Mapper(SLAMParameters):
         self.use_semantics_in_mapping = slam.use_semantics_in_mapping
         self.semantic_execution = slam.semantic_execution
         self.semantic_association_max_distance = slam.semantic_association_max_distance
-        self.start_frame = slam.start_frame
-        self.end_frame = slam.end_frame
-
-
         os.makedirs(slam._save_path, exist_ok=True)
 
         self.keyframe_th = float(self.kf_threshold)
@@ -198,12 +192,6 @@ class Mapper(SLAMParameters):
         self.cam_intrinsic = np.array([[self.fx, 0., self.cx],
                                        [0., self.fy, self.cy],
                                        [0.,0.,1]])
-
-        # Camera poses
-        self.traj_path = self._dataset_path + '/' + self.scene_id
-        self.trajmanager = TrajManager(self.dataset, self.traj_path, self.start_frame, self.end_frame, self.stride)
-        self.poses = [self.trajmanager.gt_poses[0]]
-
 
         ## Semantic extraction parameters ##
         #pq_index_path = "ckpt/pq_index.faiss"
@@ -319,8 +307,6 @@ class Mapper(SLAMParameters):
         self.semantic_worker_seconds = 0.0
         self.online_semantic_updates = 0
         self.semantic_refinement_updates = 0
-
-        self.images_path = os.path.join(self._dataset_path, self.scene_id)
 
     def run(self):
         self.mapping()
@@ -665,6 +651,7 @@ class Mapper(SLAMParameters):
                 pca_metadata, requires_grad=False
             )
         elif self.include_feature and self.semantic_representation == "dr_splat":
+            import faiss
             index = faiss.read_index(self.dr_splat_pq_index)
             if index.d != 512:
                 raise ValueError(f"Dr-Splat PQ dimension must be 512, got {index.d}")
@@ -1633,23 +1620,6 @@ class Mapper(SLAMParameters):
         y_pre = (v-self.cy)/self.fy # * z_values
 
         return pick_idxs, x_pre, y_pre
-
-    def get_image_dirs(self, images_folder):
-        color_paths = []
-        depth_paths = []
-        if self.dataset in ("replica", "scannet"):
-            images_folder = os.path.join(images_folder, "images")
-            image_files = os.listdir(images_folder)
-            image_files = sorted(image_files.copy())
-            for key in tqdm(image_files):
-                image_name = key.split(".")[0]
-                depth_image_name = f"depth{image_name[5:]}"
-                color_paths.append(f"{self.dataset_path}/images/{image_name}.jpg")
-                depth_paths.append(f"{self.dataset_path}/depth_images/{depth_image_name}.png")
-
-            return color_paths, depth_paths
-        elif self.dataset == "tum":
-            return self.trajmanager.color_paths, self.trajmanager.depth_paths
 
     def save_rendered_rgb(self, rendered_rgb, path="debug_render.png"):
         # tensor -> numpy
