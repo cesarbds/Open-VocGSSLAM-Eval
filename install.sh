@@ -14,4 +14,12 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 "${PYTHON_BIN}" -m pip install --force-reinstall --no-deps --no-build-isolation \
     "${REPO_ROOT}/submodules/diff-gaussian-rasterization"
 
+# Runtime dependencies used by ICP tracking and semantic keyframe extraction.
+"${PYTHON_BIN}" -m pip install --no-build-isolation \
+    "${REPO_ROOT}/submodules/fast_gicp"
+"${PYTHON_BIN}" -m pip install --no-deps \
+    "${REPO_ROOT}/submodules/segment-anything-langsplat"
+"${PYTHON_BIN}" -m pip install --no-deps \
+    "${REPO_ROOT}/third_party/MobileSAM"
+
 echo "Installation complete. Run: ${PYTHON_BIN} scripts/smoke_test.py"

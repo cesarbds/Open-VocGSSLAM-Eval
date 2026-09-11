@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -26,66 +26,66 @@ def visualize_rendered_depth(rendered_depth, save_path="rendered_depth.png", sho
             depth_np = rendered_depth.detach().cpu().numpy()
         else:
             depth_np = rendered_depth.detach().numpy()
-        
+
         # Handle different tensor shapes
         if depth_np.ndim == 3:
             depth_np = depth_np.squeeze()  # Remove batch dimension if present
-        
+
         print(f"Depth shape: {depth_np.shape}")
         print(f"Depth range: {depth_np.min():.3f} to {depth_np.max():.3f}")
         print(f"Depth mean: {depth_np.mean():.3f}")
-        
+
         # Handle NaN and inf values
         valid_mask = np.isfinite(depth_np)
         if not valid_mask.any():
             print("Warning: No valid depth values found!")
             return
-        
+
         # Replace invalid values with 0
         depth_clean = np.where(valid_mask, depth_np, 0)
-        
+
         # Normalize for visualization (0 to 255)
         if depth_clean.max() > depth_clean.min():
             depth_norm = (depth_clean - depth_clean.min()) / (depth_clean.max() - depth_clean.min())
         else:
             depth_norm = depth_clean
-        
+
         depth_vis = (depth_norm * 255).astype(np.uint8)
-        
+
         # Create colormap version
         depth_color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
-        
+
         # Save both grayscale and colormap versions
         cv2.imwrite(save_path.replace('.png', '_gray.png'), depth_vis)
         cv2.imwrite(save_path.replace('.png', '_color.png'), depth_color)
-        
+
         if show:
             plt.figure(figsize=(12, 4))
-            
+
             plt.subplot(1, 2, 1)
             plt.imshow(depth_vis, cmap='gray')
             plt.title('Rendered Depth (Grayscale)')
             plt.colorbar()
-            
+
             plt.subplot(1, 2, 2)
             plt.imshow(depth_color)
             plt.title('Rendered Depth (Color)')
-            
+
             plt.tight_layout()
             plt.show()
-        
+
         print(f"Depth images saved: {save_path.replace('.png', '_gray.png')} and {save_path.replace('.png', '_color.png')}")
-        
+
     except Exception as e:
         print(f"Error visualizing depth: {e}")
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
     """
- 
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
@@ -96,7 +96,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    
+
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -144,9 +144,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             shs = pc.get_features
     else:
         colors_precomp = override_color
-    
+
     # print(means3D)
-    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    # Rasterize visible Gaussians to image, obtain their radii (on screen).
     depth_image, rendered_image, radii, is_used = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -180,18 +180,18 @@ def render_3(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor
            scaling_modifier = 1.0, override_color = None, training_stage=0,
            detach_semantic_weights=False, scores=None):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
     """
- 
+
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
         pass
-    
+
     # Set up rasterization configuration
     tanfovx = math.tan(float(viewpoint_camera.FoVx[0]) * 0.5)
     tanfovy = math.tan(float(viewpoint_camera.FoVy[0]) * 0.5)
@@ -202,7 +202,7 @@ def render_3(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor
     else:
         resolution_width = int(viewpoint_camera.image_width[0]/(training_stage*2))
         resolution_height = int(viewpoint_camera.image_height[0]/(training_stage*2))
-    
+
     raster_settings = GaussianRasterizationSettings(
         image_height=resolution_height,
         image_width=resolution_width,
@@ -257,10 +257,10 @@ def render_3(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor
             shs = pc.get_features
     else:
         colors_precomp = override_color
-    
-    # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    
-    
+
+    # Rasterize visible Gaussians to image, obtain their radii (on screen).
+
+
     depth_image, rendered_image, language_feature_weight_map, radii, is_used = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -272,7 +272,7 @@ def render_3(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor
         scales = scales,
         rotations = rotations,
         cov3D_precomp = cov3D_precomp)
-    
+
     if detach_semantic_weights:
         language_feature_weight_map = language_feature_weight_map.detach()
     #print(f"Language weight map shape: {language_feature_weight_map.shape}")

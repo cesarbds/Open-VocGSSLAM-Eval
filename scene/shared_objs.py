@@ -50,7 +50,7 @@ class SharedPoints(nn.Module):
         self.filter = torch.zeros((num_points)).int()
         self.using_idx = torch.zeros((1)).int()
         self.filter_size = torch.zeros((1)).int()
-    
+
     def input_values(self, new_points, new_colors, new_z_values, new_filter):
         if new_points.shape[0] > self.points.shape[0]:
             raise RuntimeError(
@@ -61,7 +61,7 @@ class SharedPoints(nn.Module):
         self.points[:self.using_idx[0],:] = new_points
         self.colors[:self.using_idx[0],:] = new_colors
         self.z_values[:self.using_idx[0]] = new_z_values
-        
+
         self.filter_size[0] = new_filter.shape[0]
         self.filter[:self.filter_size[0]] = new_filter
 
@@ -74,17 +74,15 @@ class SharedPoints(nn.Module):
 class SharedGaussians(nn.Module):
     def __init__(self, num_points):
         super().__init__()
-        # Process-transport buffers belong in shared CPU memory. CUDA IPC here
-        # makes spawned workers depend on pidfd_getfd permissions.
-        self.xyz = torch.zeros((num_points, 3), dtype=torch.float32)
-        self.colors = torch.zeros((num_points, 3), dtype=torch.float32)
-        self.rots = torch.zeros((num_points, 4), dtype=torch.float32)
-        self.scales = torch.zeros((num_points, 3), dtype=torch.float32)
-        self.z_values = torch.zeros((num_points), dtype=torch.float32)
-        self.trackable_filter = torch.zeros((num_points), dtype=torch.long)
-        self.using_idx = torch.zeros((1), dtype=torch.int32)
-        self.filter_size = torch.zeros((1), dtype=torch.int32)
-        self.embeddings = torch.zeros((num_points, 512), dtype=torch.float32)
+        self.xyz = torch.zeros((num_points, 3)).float().cuda()
+        self.colors = torch.zeros((num_points, 3)).float().cuda()
+        self.rots = torch.zeros((num_points, 4)).float().cuda()
+        self.scales = torch.zeros((num_points, 3)).float().cuda()
+        self.z_values = torch.zeros((num_points)).float().cuda()
+        self.trackable_filter = torch.zeros((num_points)).long().cuda()
+        self.using_idx = torch.zeros((1)).int().cuda()
+        self.filter_size = torch.zeros((1)).int().cuda()
+        self.embeddings = torch.zeros((num_points, 512)).float().cuda()  # Assuming embedding dimension of 512
         self.seg_map = None
 
     def input_values(self, new_xyz, new_colors, new_rots, new_scales, new_z_values, new_trackable_filter, embeddings=None, seg_map=None):
@@ -95,18 +93,18 @@ class SharedGaussians(nn.Module):
                 f"capacity is {self.xyz.shape[0]}"
             )
         self.using_idx[0] = new_xyz.shape[0]
-        self.xyz[:self.using_idx[0],:] = new_xyz.detach().cpu()
-        self.colors[:self.using_idx[0],:] = new_colors.detach().cpu()
-        self.rots[:self.using_idx[0],:] = new_rots.detach().cpu()
-        self.scales[:self.using_idx[0],:] = new_scales.detach().cpu()
-        self.z_values[:self.using_idx[0]] = new_z_values.detach().cpu()
+        self.xyz[:self.using_idx[0],:] = new_xyz
+        self.colors[:self.using_idx[0],:] = new_colors
+        self.rots[:self.using_idx[0],:] = new_rots
+        self.scales[:self.using_idx[0],:] = new_scales
+        self.z_values[:self.using_idx[0]] = new_z_values
         if embeddings is not None:
-            self.embeddings[:self.using_idx[0],:] = embeddings.detach().cpu()
+            self.embeddings[:self.using_idx[0],:] = embeddings
             self.seg_map = seg_map
 
         self.filter_size[0] = new_trackable_filter.shape[0]
-        self.trackable_filter[:self.filter_size[0]] = new_trackable_filter.detach().cpu()
-    
+        self.trackable_filter[:self.filter_size[0]] = new_trackable_filter
+
     def get_values(self, include_features=False):
         if include_features:
             return  copy.deepcopy(self.xyz[:self.using_idx[0],:]),\
@@ -146,7 +144,7 @@ class SharedTargetPoints(nn.Module):
         self.xyz[:self.using_idx[0],:] = new_xyz
         self.rots[:self.using_idx[0],:] = new_rots
         self.scales[:self.using_idx[0],:] = new_scales
-    
+
     def get_values_tensor(self):
         return  copy.deepcopy(self.xyz[:self.using_idx[0],:]),\
                 copy.deepcopy(self.rots[:self.using_idx[0],:]),\
@@ -176,22 +174,22 @@ class SharedCam(nn.Module):
         self.dataset_i = torch.zeros((1)).int()
 
         self.include_feature = include_feature
-        
+
         self.original_image = torch.from_numpy(image).float().permute(2,0,1)/255
 
         ### create some option to laod, at first for test save which iteration it is
-        #self.original_embeddings = torch.zeros(512, image.shape[0], image.shape[1]) 
+        #self.original_embeddings = torch.zeros(512, image.shape[0], image.shape[1])
         # rgb_level_1 = cv2.resize(image, (self.image_width//2, self.image_height//2))
         # rgb_level_2 = cv2.resize(image, (self.image_width//4, self.image_height//4))
         # self.rgb_level_1 = torch.from_numpy(rgb_level_1).float().cuda().permute(2,0,1)/255
         # self.rgb_level_2 = torch.from_numpy(rgb_level_2).float().cuda().permute(2,0,1)/255
-        
+
         self.original_depth_image = torch.from_numpy(depth_image).float().unsqueeze(0)
         # depth_level_1 = cv2.resize(depth_image, (self.image_width//2, self.image_height//2), interpolation=cv2.INTER_NEAREST)
         # depth_level_2 = cv2.resize(depth_image, (self.image_width//4, self.image_height//4), interpolation=cv2.INTER_NEAREST)
         # self.depth_level_1 = torch.from_numpy(depth_level_1).float().unsqueeze(0).cuda()
         # self.depth_level_2 = torch.from_numpy(depth_level_2).float().unsqueeze(0).cuda()
-        
+
         self.zfar = 100.0
         self.znear = 0.01
 
@@ -202,13 +200,13 @@ class SharedCam(nn.Module):
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1)
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
-        
+
     def update_matrix(self):
         self.world_view_transform[:,:] = getWorld2View2(self.R, self.t, self.trans, self.scale).transpose(0, 1)
         # self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform[:,:] = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center[:] = self.world_view_transform.inverse()[3, :3]
-    
+
     def setup_cam(self, R, t, rgb_img, depth_img, ii):
         # Set pose, projection matrix
         self.R[:,:] = torch.from_numpy(R)
@@ -218,17 +216,17 @@ class SharedCam(nn.Module):
         self.original_image[:,:,:] = torch.from_numpy(rgb_img).float().permute(2,0,1)/255
         self.original_depth_image[:,:,:] = torch.from_numpy(depth_img).float().unsqueeze(0)
         self.dataset_i[0] = ii
-    
+
     def on_cuda(self):
         self.world_view_transform = self.world_view_transform.cuda()
         self.projection_matrix = self.projection_matrix.cuda()
         self.full_proj_transform = self.full_proj_transform.cuda()
         self.camera_center = self.camera_center.cuda()
-        
+
         self.original_image = self.original_image.cuda()
         self.original_depth_image = self.original_depth_image.cuda()
 
-        
+
 
 
 class MappingCam(nn.Module):
@@ -249,19 +247,19 @@ class MappingCam(nn.Module):
         self.fx = fx
         self.fy = fy
         self.last_loss = 0.
-        
+
         self.original_image = torch.from_numpy(image).float().cuda().permute(2,0,1)/255
         # rgb_level_1 = cv2.resize(image, (self.image_width//2, self.image_height//2))
         # rgb_level_2 = cv2.resize(image, (self.image_width//4, self.image_height//4))
         # self.rgb_level_1 = torch.from_numpy(rgb_level_1).float().cuda().permute(2,0,1)/255
         # self.rgb_level_2 = torch.from_numpy(rgb_level_2).float().cuda().permute(2,0,1)/255
-        
+
         self.original_depth_image = torch.from_numpy(depth_image).float().unsqueeze(0).cuda()
         # depth_level_1 = cv2.resize(depth_image, (self.image_width//2, self.image_height//2), interpolation=cv2.INTER_NEAREST)
         # depth_level_2 = cv2.resize(depth_image, (self.image_width//4, self.image_height//4), interpolation=cv2.INTER_NEAREST)
         # self.depth_level_1 = torch.from_numpy(depth_level_1).float().unsqueeze(0).cuda()
         # self.depth_level_2 = torch.from_numpy(depth_level_2).float().unsqueeze(0).cuda()
-        
+
         self.zfar = 100.0
         self.znear = 0.01
 

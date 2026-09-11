@@ -15,6 +15,9 @@ from diff_gaussian_rasterization import _C
 from diff_gaussian_rasterization import GaussianRasterizer
 from gaussian_renderer import render_3
 from scene.gaussian_model import GaussianModel
+from scene.shared_objs import SharedCam, SharedGaussians, SharedPoints, SharedTargetPoints
+from src.mapper import Mapper
+from src.tracker import Tracker
 
 
 def main():
@@ -26,6 +29,10 @@ def main():
     print(f"Renderer CUDA: {_C.__file__}")
     print("Renderer layout: 64 semantic channels, 12 quick-render coefficients")
     print(f"Gaussian model: {type(model).__name__}; render function: {render_3.__name__}")
+    print(
+        "SLAM runtime: "
+        f"tracker={Tracker.__name__}, mapper={Mapper.__name__}, shared buffers=OK"
+    )
     print("Smoke test passed")
 
 

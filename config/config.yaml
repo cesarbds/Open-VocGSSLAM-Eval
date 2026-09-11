@@ -1,0 +1,104 @@
+main:
+  device: cuda
+  dataset: replica #hm3dsem, scannet, replica
+  scene_id: room0
+  split: ''
+  dataset_path: /home/adrolab/Documentos/Cesar/Open-VocGSSLAM/Replica
+  save_path: /home/adrolab/Documentos/Cesar/Open-VocGSSLAM/saved_results
+  clip_model: open-clip
+  seg_model: sam
+  save_results: True
+  start_frame: 0
+  end_frame: 650
+  stride: 1
+  use_train_split: True
+  include_feature: False
+  semantic_extractor_live: False
+  type_semantic_extractor: "dr_splat" # "raw", "quantized", "dr_splat"
+  use_pq: True
+  mask_wise: True
+dataset:
+  hm3dsem:
+    gt_skip_frames: 2
+models:
+  clip:
+    type:  ViT-B-16 # ViT-L/14@336px # ViT-H-14 , ViT-L-14
+    checkpoint: open_clip/checkpoints/laion2b_s32b_b79k.bin
+    #checkpoint: checkpoints/ovseg_clipl14_9a1909.pth checkpoints/laion2b_s32b_b79k.bin
+  sam:
+    checkpoint: sam2/checkpoints/sam_vit_h_4b8939.pth
+    type: vit_h
+    points_per_side: 8
+    pred_iou_thresh: 0.88
+    points_per_batch: 144
+    crop_n_layers: 0
+    stability_score_thresh: 0.95
+    min_mask_region_area: 100
+  # sam:
+  #   checkpoint: sam2/checkpoints/sam_vit_l_0b3195.pth
+  #   type: vit_l
+  #   points_per_side: 12
+  #   pred_iou_thresh: 0.88
+  #   points_per_batch: 144
+  #   crop_n_layers: 0
+  #   stability_score_thresh: 0.95
+  #   min_mask_region_area: 100
+pipeline:
+  create_graph: True
+  voxel_size: 0.02
+  skip_frames: 10
+  init_overlap_thresh: 0.75
+  overlap_thresh_factor: 0.025
+  iou_thresh: 0.05
+  clip_masked_weight: 0.4418
+  clip_bbox_margin: 50 # in pixels
+  feature_dbscan_eps: 0.01
+  max_mask_distance: 10000 # 6.4239 in meters
+  min_pcd_points: 100
+  depth_weighting: false
+  grid_resolution: 0.05
+  merge_type: sequential # hierarchical, sequential
+  save_intermediate_results: false
+  obj_labels: HM3DSEM_LABELS
+  merge_objects_graph: false
+  kf_threshold: 0.7
+  downsample_rate: 10
+  depth_trunc: 12 # in meters
+  max_correspondence_distance: 0.02 # tum : 0.03, replica : 0.02
+  mapping_num_iters: 60
+  tracking_num_iters: 40
+  masked_weight: 0.75
+mapping:
+  loss_weights:
+    im: 0.9
+    depth: 0.1
+    semantic: 0.1
+    big_gaussian_reg: 0.05
+    small_gaussian_reg: 0.005
+    rel_rgb: 0.10
+    rel_depth: 0.10
+    obj_3d: 100.0
+  use_l1: True
+  ignore_outlier_depth_loss: True
+  use_semantic_for_mapping: True
+  use_reg_loss: True
+  trackable_opacity_th: 0.05
+  keyframe_freq: 10
+  keyframe_miou_th: 0.7
+  percent_dense: 0.01
+  position_lr_init: 0.0000016 # 0.0000016
+  position_lr_final: 0.0000016 # 0.00000016
+  semantic_lr: 0.00025
+  feeature_lr: 0.0025
+  opacity_lr: 0.05
+  scaling_lr: 0.005
+  rotation_lr: 0.001
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 10000
+  training_stage: 0
+icp:
+  sh_degree: 0
+  white_background: False
+  knn_maxd: 99999.0
+  overlapped_th: 5e-4
+  overlapped_th2: 5e-5

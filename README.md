@@ -1,9 +1,10 @@
 # Open-VocGSSLAM Evaluation
 
-Minimal, evaluation-only package for Open-VocGSSLAM Gaussian maps. It contains
-the custom RGB/depth/semantic CUDA rasterizer, Gaussian checkpoint loader, camera
-utilities, and geometric and Replica semantic evaluation scripts. It does not
-contain SLAM training/mapping code, datasets, model checkpoints, or results.
+Portable Open-VocGSSLAM runtime and evaluation package. It contains the ICP
+tracker, Gaussian mapper, semantic keyframe extraction, shared multiprocessing
+objects, custom RGB/depth/semantic CUDA rasterizer, checkpoint loader, and
+evaluation scripts. Datasets, model checkpoints, ROS drivers, and results are
+not included.
 
 ## Requirements
 
@@ -69,6 +70,34 @@ saved_results/room0/
     scene_final.ply
     scene_final.pth
 ```
+
+## Run tracking and mapping
+
+For a recorded RGB-D sequence in one of the supported layouts:
+
+```bash
+python main.py \
+  --dataset replica \
+  --dataset-path Replica \
+  --scene-id room0 \
+  --save-path saved_results/room0 \
+  --no-include-feature \
+  --pruning-mode simple
+```
+
+The runtime orchestration is in `src/OSGSSLAM.py`: `Tracker` and `Mapper` run
+as separate processes and exchange cameras and Gaussian targets through the
+objects in `scene/shared_objs.py`.
+
+For ROS2/ZED, keep this orchestration and replace the finite file/trajectory
+source used by `Tracker.tracking()` with the synchronized RGB, registered-depth,
+timestamp and calibrated-intrinsics messages from the ROS adapter. The tracker
+publishes accepted insertion keyframes to the mapper; semantics should remain
+in the mapper so feature extraction does not delay pose tracking.
+
+Runtime assets are intentionally excluded from Git. Supply the paths required
+by the selected mode, including the language codebook and segmentation model
+checkpoint when semantic mapping is enabled.
 
 ## Geometric evaluation
 

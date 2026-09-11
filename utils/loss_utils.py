@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -26,7 +26,7 @@ def semantic_loss(S_hat, S):
     error = torch.abs(S_hat - S).sum(dim=-1)  # [N]
 
     # Normalize by number of valid static elements
-    loss = error.sum() 
+    loss = error.sum()
 
     return loss
 
@@ -65,7 +65,7 @@ def ssim(img, gt, window_size=11, size_average=True):
     return _ssim(img, gt, window, window_size, channel, size_average)
 
 def _ssim(img1, img2, window, window_size, channel, size_average=True):
-    
+
     mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
     mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
 
@@ -86,4 +86,3 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map, ssim_map.mean()
     else:
         return ssim_map, ssim_map.mean(1).mean(1).mean(1)
-

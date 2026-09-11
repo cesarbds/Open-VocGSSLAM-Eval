@@ -1,1 +1,1 @@
-"""Camera and configuration helpers used by eval.py."""
+"""Runtime utilities used by Open-VocGSSLAM."""

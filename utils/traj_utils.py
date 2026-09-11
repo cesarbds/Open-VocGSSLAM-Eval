@@ -9,7 +9,7 @@ class TrajManager:
     def __init__(self, which_dataset, dataset_path, start_frame, end_frame, stride):
         '''
         For plot/evaluate trajectory
-        
+
         Args:
         which_dataset : "tum" or "replica"
         dataset_path : dataset path
@@ -31,7 +31,7 @@ class TrajManager:
         else:
             print("Unknown dataset!")
             sys.exit()
-        
+
         self.gt_poses_vis = np.array([x[:3, 3] for x in self.gt_poses])
 
     def quaternion_rotation_matrix(self, Q, t):
@@ -43,10 +43,10 @@ class TrajManager:
         T[:3, :3] = rotation_mat
         T[:3, 3] = [t[0], t[1], t[2]]
 
-        T[3, :] = [0, 0, 0, 1]     
+        T[3, :] = [0, 0, 0, 1]
         # return np.linalg.inv(T)
         return T
-    
+
     def replica_load_poses(self, path):
         poses = []
         with open(path, "r") as f:
@@ -120,14 +120,14 @@ class TrajManager:
             self.depth_paths += [os.path.join(self.dataset_path, depth_data[j, 1])]
             c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
             poses += [c2w]
-        
+
         return np.array(poses)
-    
+
     def parse_list(self, filepath, skiprows=0):
         data = np.loadtxt(filepath, delimiter=' ',
                           dtype=np.unicode_, skiprows=skiprows)
         return data
-    
+
     def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose, max_dt=0.08):
         associations = []
         for i, t in enumerate(tstamp_image):
@@ -145,11 +145,11 @@ class TrajManager:
                     associations.append((i, j, k))
 
         return associations
-    
+
     def plot_traj(self, iter, poses):
         '''
         Plot trajectory
-        
+
         iter : iter
         poses : list of estimated poses
         '''
@@ -163,7 +163,7 @@ class TrajManager:
         pyplot.legend()
         pyplot.axis('equal')
         pyplot.pause(1e-15)
-    
+
     def eval_traj(self):
         pass
 
